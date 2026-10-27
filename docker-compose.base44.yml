@@ -1,0 +1,87 @@
+# Base44 sandbox runbook for the OpenAI Math release repository.
+#
+# This repository is a *document collection*, not an application: 719
+# manuscripts (committed PDFs plus their LaTeX sources under preprints/), a
+# Lean formalization library (lean/), and abridged reasoning traces. There is no
+# build step, no server and no infrastructure dependency, so "running" the
+# project in the sandbox means exposing the checkout read-only over HTTP so the
+# collection can be browsed in the preview.
+#
+# Nothing in this file is needed to *use* the repository (reading the PDFs,
+# building/comparing the Lean library); it exists only for the Base44 preview.
+#
+# Start:  docker compose -f docker-compose.base44.yml up -d
+# Preview: http://localhost:3000/  — directory listing of the collection. Start
+#          at overview.pdf or CONTENTS.md, or drill into preprints/<family>/ for
+#          a manuscript. PDFs and .tex are served inline, .md as text.
+
+services:
+  collection:
+    # Plain runtime base image; the served content is the sandbox checkout
+    # bind-mounted below, never a baked-in copy.
+    image: nginx:alpine
+    labels:
+      base44.project: "OpenAI Math Release"
+      base44.kind: web
+      base44.port: "3000"
+    ports:
+      - "3000:80"
+    volumes:
+      # Read-only: the checkout is the served content, never written to.
+      #
+      # Served from /srv/collection rather than the image's own
+      # /usr/share/nginx/html so that no index.html exists and a request for /
+      # gets the collection listing instead of nginx's welcome page.
+      #
+      # The checkout's top-level directory is mode 0700, so nginx (which drops
+      # to an unprivileged user) cannot traverse a bind mount of the whole tree.
+      # Its top-level entries are world-readable, so mount those individually
+      # rather than relaxing permissions on the checkout. This also keeps .git
+      # and .github out of the served tree entirely.
+      - ./preprints:/srv/collection/preprints:ro
+      - ./lean:/srv/collection/lean:ro
+      - ./reasoning_traces:/srv/collection/reasoning_traces:ro
+      - ./CONTENTS.md:/srv/collection/CONTENTS.md:ro
+      - ./README.md:/srv/collection/README.md:ro
+      - ./history.md:/srv/collection/history.md:ro
+      - ./overview.pdf:/srv/collection/overview.pdf:ro
+      - ./overview.tex:/srv/collection/overview.tex:ro
+      - ./LICENSE:/srv/collection/LICENSE:ro
+    configs:
+      - source: collection_site
+        target: /etc/nginx/conf.d/default.conf
+    healthcheck:
+      # Probes real responsiveness on the served path (busybox wget ships in the
+      # nginx:alpine image); no application endpoint is invented for this.
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: on-failure
+
+configs:
+  collection_site:
+    content: |
+      server {
+        listen 80;
+        listen [::]:80;
+        server_name _;
+        root /srv/collection;
+        charset utf-8;
+
+        # The collection is navigated by folder, so listings must be browsable.
+        autoindex on;
+        autoindex_localtime on;
+
+        # Catalogue/manuscript READMEs are Markdown: show them as text in the
+        # browser instead of downloading them. `include mime.types` keeps the
+        # normal MIME table (notably application/pdf) intact elsewhere.
+        location ~ \.md$ {
+          include /etc/nginx/mime.types;
+          default_type text/plain;
+        }
+
+        # Never serve VCS metadata (also excluded by the mounts above).
+        location ~ /\. { deny all; }
+      }
